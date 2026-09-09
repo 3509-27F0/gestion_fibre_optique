@@ -37,6 +37,20 @@ def authenticate(username, password):
 
 def init_db():
     with conn() as c:
+        # Table des utilisateurs
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            nom TEXT NOT NULL,
+            role TEXT NOT NULL,
+            actif INTEGER NOT NULL DEFAULT 1,
+            cree_le TEXT NOT NULL
+        )
+        """)
+
+        # Table des interventions
         c.execute("""
         CREATE TABLE IF NOT EXISTS interventions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,9 +75,72 @@ def init_db():
             resultat TEXT,
             recommandations TEXT,
             observations TEXT,
-            cree_le TEXT NOT NULL
+            cree_le TEXT NOT NULL,
+            statut TEXT NOT NULL DEFAULT 'Brouillon',
+            created_by INTEGER,
+            soumise_le TEXT
         )
         """)
+
+        # Mise à niveau d'une ancienne base existante
+        columns = {
+            row["name"]
+            for row in c.execute("PRAGMA table_info(interventions)").fetchall()
+        }
+
+        if "statut" not in columns:
+            c.execute(
+                "ALTER TABLE interventions ADD COLUMN statut TEXT NOT NULL DEFAULT 'Brouillon'"
+            )
+
+        if "created_by" not in columns:
+            c.execute(
+                "ALTER TABLE interventions ADD COLUMN created_by INTEGER"
+            )
+
+        if "soumise_le" not in columns:
+            c.execute(
+                "ALTER TABLE interventions ADD COLUMN soumise_le TEXT"
+            )
+
+
+def create_initial_admin():
+    # Ne rien faire si un utilisateur existe déjà
+    with conn() as c:
+        count = c.execute(
+            "SELECT COUNT(*) AS total FROM users"
+        ).fetchone()["total"]
+
+    if count > 0:
+        return
+
+    # Création du premier administrateur uniquement à partir
+    # des secrets configurés dans Streamlit Cloud
+    try:
+        username = st.secrets.get("ADMIN_USERNAME")
+        password = st.secrets.get("ADMIN_PASSWORD")
+        nom = st.secrets.get("ADMIN_NOM", "Administrateur")
+    except Exception:
+        return
+
+    if not username or not password:
+        return
+
+    with conn() as c:
+        c.execute(
+            """
+            INSERT INTO users
+            (username, password_hash, nom, role, actif, cree_le)
+            VALUES (?, ?, ?, 'administrateur', 1, ?)
+            """,
+            (
+                username,
+                hash_password(password),
+                nom,
+                datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+
 
 def next_number():
     with conn() as c:
