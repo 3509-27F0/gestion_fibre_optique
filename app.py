@@ -167,6 +167,7 @@ def save_intervention(data):
 
 
 init_db()
+create_initial_admin()
 st.set_page_config(page_title="Gestion Fibre Optique | VIPNET", page_icon="🧵", layout="wide")
 # -----------------------------------------------------------------------------
 # AUTHENTIFICATION
