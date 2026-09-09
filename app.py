@@ -6,7 +6,7 @@ from datetime import datetime
 import pandas as pd
 import base64
 import hashlib
-from pdf_utils import generate_pdf, pdf_preview
+from pdf_utils import generate_pdf, generate_ot_pdf, pdf_preview
 
 BASE = Path(__file__).parent
 DB = BASE / "data" / "fibre.db"
@@ -102,6 +102,35 @@ def init_db():
             c.execute(
                 "ALTER TABLE interventions ADD COLUMN soumise_le TEXT"
             )
+
+
+        # Table des demandes d'autorisation OT
+        c.execute("""
+        CREATE TABLE IF NOT EXISTS demandes_ot (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            numero TEXT UNIQUE NOT NULL,
+            date_demande TEXT NOT NULL,
+            demandeur TEXT,
+            client TEXT,
+            site TEXT,
+            localisation TEXT,
+            objet_travail TEXT,
+            description_travaux TEXT,
+            date_debut TEXT,
+            date_fin TEXT,
+            heure_debut TEXT,
+            heure_fin TEXT,
+            equipe TEXT,
+            observations TEXT,
+            statut TEXT NOT NULL DEFAULT 'En attente de validation',
+            validateur TEXT,
+            date_validation TEXT,
+            mode_validation TEXT,
+            observation_validation TEXT,
+            cree_le TEXT NOT NULL,
+            created_by INTEGER
+        )
+        """)
 
 
 def create_initial_admin():
@@ -352,12 +381,370 @@ else:
     st.title("🧵 GESTION DES INTERVENTIONS — FIBRE OPTIQUE")
     st.caption("Journal de traçabilité • fonctionnement local • SQLite • version 1")
 
-menu_options = ["Tableau de bord", "Nouvelle intervention", "Historique"]
+menu_options = [
+    "Tableau de bord",
+    "Nouvelle intervention",
+    "Historique",
+    "DEMANDES D'AUTORISATION (OT)"
+]
 
 if permissions["gestion_utilisateurs"]:
     menu_options.append("Gestion des utilisateurs")
 
 menu = st.sidebar.radio("MENU", menu_options)
+if menu == "DEMANDES D'AUTORISATION (OT)":
+    st.header("📋 DEMANDES D'AUTORISATION (OT)")
+    st.info("OT = Ordre de Travail. Toute demande commence avec le statut « En attente de validation ». L'impression reste possible avant validation.")
+
+    def next_ot_number():
+        with conn() as c:
+            row = c.execute(
+                "SELECT id FROM demandes_ot ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+
+        n = (row["id"] + 1) if row else 1
+        return f"OT-{datetime.now():%Y}-{n:04d}"
+
+    numero_ot = next_ot_number()
+
+    st.write(f"**Numéro OT automatique : {numero_ot}**")
+
+    with st.form("demande_ot"):
+        st.subheader("Informations de la demande")
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            date_demande = st.date_input(
+                "Date de la demande",
+                datetime.now().date()
+            )
+
+            demandeur = st.text_input(
+                "Demandeur",
+                value=st.session_state.get("nom", "")
+            )
+
+            client = st.text_input("Client")
+
+            site = st.text_input("Site")
+
+            localisation = st.text_input("Localisation")
+
+        with col2:
+            date_debut = st.date_input(
+                "Date prévue de début",
+                datetime.now().date()
+            )
+
+            date_fin = st.date_input(
+                "Date prévue de fin",
+                datetime.now().date()
+            )
+
+            heure_debut = st.time_input(
+                "Heure de début"
+            )
+
+            heure_fin = st.time_input(
+                "Heure de fin"
+            )
+
+            equipe = st.text_input(
+                "Équipe / Techniciens concernés"
+            )
+
+        objet_travail = st.text_input(
+            "Objet du travail"
+        )
+
+        description_travaux = st.text_area(
+            "Description détaillée des travaux",
+            height=150
+        )
+
+        observations = st.text_area(
+            "Observations",
+            height=100
+        )
+
+        submitted = st.form_submit_button(
+            "💾 ENREGISTRER LA DEMANDE OT",
+            type="primary"
+        )
+
+    if submitted:
+        if not objet_travail.strip():
+            st.error("Veuillez renseigner l'objet du travail.")
+        elif not site.strip():
+            st.error("Veuillez renseigner le site.")
+        else:
+            with conn() as c:
+                c.execute(
+                    """
+                    INSERT INTO demandes_ot (
+                        numero,
+                        date_demande,
+                        demandeur,
+                        client,
+                        site,
+                        localisation,
+                        objet_travail,
+                        description_travaux,
+                        date_debut,
+                        date_fin,
+                        heure_debut,
+                        heure_fin,
+                        equipe,
+                        observations,
+                        statut,
+                        cree_le,
+                        created_by
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        numero_ot,
+                        date_demande.isoformat(),
+                        demandeur,
+                        client,
+                        site,
+                        localisation,
+                        objet_travail,
+                        description_travaux,
+                        date_debut.isoformat(),
+                        date_fin.isoformat(),
+                        heure_debut.strftime("%H:%M"),
+                        heure_fin.strftime("%H:%M"),
+                        equipe,
+                        observations,
+                        "En attente de validation",
+                        datetime.now().isoformat(timespec="seconds"),
+                        st.session_state.user_id
+                    )
+                )
+
+            st.success(
+                f"Demande OT {numero_ot} enregistrée avec succès."
+            )
+            st.info(
+                "Statut : EN ATTENTE DE VALIDATION. "
+                "La demande pourra être imprimée avant sa validation."
+            )
+
+
+    st.divider()
+    st.subheader("📋 Historique des demandes OT")
+
+    with conn() as c:
+        demandes_ot = c.execute(
+            """
+            SELECT *
+            FROM demandes_ot
+            ORDER BY id DESC
+            """
+        ).fetchall()
+
+    if not demandes_ot:
+        st.info("Aucune demande OT enregistrée.")
+    else:
+        for ot in demandes_ot:
+            with st.container(border=True):
+                col1, col2, col3 = st.columns([2, 3, 2])
+
+                with col1:
+                    st.markdown(f"### {ot['numero']}")
+                    st.write(f"📅 {ot['date_demande']}")
+
+                with col2:
+                    st.write(f"**Client :** {ot['client'] or '-'}")
+                    st.write(f"**Site :** {ot['site'] or '-'}")
+                    st.write(f"**Objet :** {ot['objet_travail'] or '-'}")
+
+                with col3:
+                    statut = ot["statut"]
+
+                    if statut == "Validée":
+                        st.success(f"🟢 {statut}")
+                    elif statut == "Refusée":
+                        st.error(f"🔴 {statut}")
+                    else:
+                        st.warning(f"🟠 {statut}")
+
+                    st.write(f"**Demandeur :** {ot['demandeur'] or '-'}")
+
+                st.divider()
+
+                st.markdown("#### 🔐 Validation de l'OT")
+
+                if ot["statut"] == "En attente de validation":
+                    col_val1, col_val2 = st.columns(2)
+
+                    with col_val1:
+                        with st.expander("✅ Valider l'OT"):
+                            mode_validation = st.selectbox(
+                                "Mode de validation",
+                                ["Numérique", "Physique"],
+                                key=f"mode_val_{ot['id']}"
+                            )
+
+                            validateur = st.text_input(
+                                "Nom du responsable / validateur",
+                                value=st.session_state.get("nom", ""),
+                                key=f"validateur_{ot['id']}"
+                            )
+
+                            observation_validation = st.text_area(
+                                "Observation",
+                                key=f"obs_val_{ot['id']}",
+                                placeholder="Observation éventuelle..."
+                            )
+
+                            if st.button(
+                                "✅ CONFIRMER LA VALIDATION",
+                                key=f"confirmer_val_{ot['id']}",
+                                type="primary",
+                                use_container_width=True
+                            ):
+                                if not validateur.strip():
+                                    st.error("Veuillez renseigner le nom du validateur.")
+                                else:
+                                    with conn() as c:
+                                        c.execute(
+                                            """
+                                            UPDATE demandes_ot
+                                            SET statut = ?,
+                                                validateur = ?,
+                                                date_validation = ?,
+                                                mode_validation = ?,
+                                                observation_validation = ?
+                                            WHERE id = ?
+                                            """,
+                                            (
+                                                "Validée",
+                                                validateur.strip(),
+                                                datetime.now().isoformat(timespec="seconds"),
+                                                mode_validation,
+                                                observation_validation.strip(),
+                                                ot["id"]
+                                            )
+                                        )
+
+                                    st.success(
+                                        f"OT {ot['numero']} validée avec succès."
+                                    )
+                                    st.rerun()
+
+                    with col_val2:
+                        with st.expander("❌ Refuser l'OT"):
+                            motif_refus = st.text_area(
+                                "Motif du refus",
+                                key=f"motif_refus_{ot['id']}",
+                                placeholder="Indiquez la raison du refus..."
+                            )
+
+                            validateur_refus = st.text_input(
+                                "Nom du responsable",
+                                value=st.session_state.get("nom", ""),
+                                key=f"validateur_refus_{ot['id']}"
+                            )
+
+                            if st.button(
+                                "❌ CONFIRMER LE REFUS",
+                                key=f"confirmer_refus_{ot['id']}",
+                                use_container_width=True
+                            ):
+                                if not validateur_refus.strip():
+                                    st.error("Veuillez renseigner le nom du responsable.")
+                                elif not motif_refus.strip():
+                                    st.error("Veuillez renseigner le motif du refus.")
+                                else:
+                                    with conn() as c:
+                                        c.execute(
+                                            """
+                                            UPDATE demandes_ot
+                                            SET statut = ?,
+                                                validateur = ?,
+                                                date_validation = ?,
+                                                mode_validation = ?,
+                                                observation_validation = ?
+                                            WHERE id = ?
+                                            """,
+                                            (
+                                                "Refusée",
+                                                validateur_refus.strip(),
+                                                datetime.now().isoformat(timespec="seconds"),
+                                                "Numérique",
+                                                motif_refus.strip(),
+                                                ot["id"]
+                                            )
+                                        )
+
+                                    st.error(
+                                        f"OT {ot['numero']} refusée."
+                                    )
+                                    st.rerun()
+
+                elif ot["statut"] == "Validée":
+                    st.success(
+                        f"✅ OT validée par {ot['validateur'] or '-'} "
+                        f"le {ot['date_validation'] or '-'} "
+                        f"({ot['mode_validation'] or '-'})"
+                    )
+
+                    if ot["observation_validation"]:
+                        st.info(
+                            f"📝 Observation : {ot['observation_validation']}"
+                        )
+
+                elif ot["statut"] == "Refusée":
+                    st.error(
+                        f"❌ OT refusée par {ot['validateur'] or '-'} "
+                        f"le {ot['date_validation'] or '-'}"
+                    )
+
+                    if ot["observation_validation"]:
+                        st.warning(
+                            f"📝 Motif : {ot['observation_validation']}"
+                        )
+
+                st.divider()
+
+                col_pdf1, col_pdf2 = st.columns(2)
+
+                pdf_ot = generate_ot_pdf(ot)
+
+                with col_pdf1:
+                    if st.button(
+                        "👁️ Visualiser le PDF",
+                        key=f"voir_ot_{ot['id']}",
+                        use_container_width=True
+                    ):
+                        st.session_state["ot_pdf_id"] = ot["id"]
+
+                with col_pdf2:
+                    st.download_button(
+                        "⬇️ Télécharger / Imprimer",
+                        pdf_ot,
+                        f"{ot['numero']}.pdf",
+                        "application/pdf",
+                        key=f"pdf_ot_{ot['id']}",
+                        use_container_width=True
+                    )
+
+                if st.session_state.get("ot_pdf_id") == ot["id"]:
+                    st.markdown("### 👁️ Aperçu avant impression")
+                    st.components.v1.html(
+                        pdf_preview(pdf_ot),
+                        height=870,
+                        scrolling=False
+                    )
+                    st.info(
+                        "💡 Le PDF peut être imprimé même si la demande "
+                        "est encore « En attente de validation »."
+                    )
+
+
 if menu == "Nouvelle intervention":
     st.header("➕ Nouvelle intervention")
     st.info("Chaque intervention est ajoutée à l'historique. Les anciennes fiches ne sont pas écrasées.")
